@@ -1,0 +1,39 @@
+settings:
+  poll_interval_seconds: 60
+  max_workers: 20
+  connect_timeout_seconds: 8
+  command_timeout_seconds: 10
+  recheck_delay_seconds: 10
+  heartbeat_file: /tmp/mikrotik_monitor.heartbeat
+  log_level: INFO
+
+endpoints:
+  main_server:
+    host: example-main.sn.mynetname.net
+    port: 28728
+    username: admin
+    password: replace_me
+  bridge_server:
+    host: example-bridge.sn.mynetname.net
+    port: 18729
+    username: admin
+    password: replace_me
+  remote_client_a:
+    host: example-client-a.sn.mynetname.net
+    port: 18728
+    username: admin
+    password: replace_me
+
+links:
+  - name: My-Home
+    client_endpoint_ref: remote_client_a
+    server_endpoint_ref: main_server
+    ping_count: 5
+    packet_loss_threshold: 100
+    repair_cooldown_seconds: 180
+    repair_max_retries: 2
+    wireguard:
+      client_wireguard_name: wg-client-home
+      server_wireguard_name: wg-main-home
+      wg_subnet: 10.10.0.0/24
+      server_ping_ip: 10.10.0.1

@@ -1,0 +1,15 @@
+services:
+  mikrotik-monitor:
+    build: .
+    container_name: mikrotik-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MT_CONFIG_PATH: /app/config/routers.yaml
+      MT_WEB_HOST: 0.0.0.0
+      MT_WEB_PORT: 5001
+    volumes:
+      - ./config/routers.yaml:/app/config/routers.yaml:ro
+    ports:
+      - "5001:5001"
