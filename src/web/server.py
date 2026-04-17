@@ -9,6 +9,7 @@ from threading import Thread
 from urllib.parse import parse_qs, urlparse
 
 from src.config.runtime_config import RuntimeConfigStore
+from src.logging_setup import get_recent_logs
 from src.monitor.status_store import StatusStore
 from src.routeros.client import RouterOsError
 from src.routeros.wireguard_discovery import list_wireguard_interface_names
@@ -326,6 +327,43 @@ def _html_page() -> str:
     .chip-bad { color: #350d12; background: var(--bad); border-color: transparent; }
     .chip-warn { color: #3b2506; background: var(--warn); border-color: transparent; }
     .reason { max-width: 320px; word-break: break-word; }
+    .log-panel {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #0f1830;
+    }
+    .log-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .log-body {
+      max-height: 360px;
+      overflow: auto;
+    }
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+    .log-table td, .log-table th {
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      padding: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .log-col-time { width: 180px; }
+    .log-col-level { width: 72px; text-align: center; }
+    .log-col-message { white-space: normal; word-break: break-word; }
     @media (max-width: 900px){
       .cards { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
       .endpoint-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -342,12 +380,19 @@ def _html_page() -> str:
       <div>
         <div class="title-row">
           <h1 class="title">Mikrotik 网络状态面板</h1>
-          <span class="version-tag">v1.0.1</span>
+          <span class="version-tag">v1.0.2</span>
         </div>
         <div class="subtitle">实时显示设备到主设备连接情况、丢包和自动修复结果</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <button class="btn btn-inline" title="系统设置" onclick="openSettingsModal()">⚙</button>
+        <button class="btn btn-inline" title="运行日志" onclick="openLogModal()" aria-label="运行日志">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="display:block;">
+            <path d="M7 3h7l5 5v13H7z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M14 3v5h5" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M10 13h6M10 17h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
         <button class="btn btn-inline" onclick="logout()">退出登录</button>
       </div>
     </div>
@@ -481,6 +526,34 @@ def _html_page() -> str:
       </div>
     </div>
   </div>
+  <div id="logModalMask" class="modal-mask">
+    <div class="modal" style="width:min(980px,98vw);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>运行日志</strong>
+        <button class="btn btn-inline" onclick="closeLogModal()">关闭</button>
+      </div>
+      <div class="log-panel">
+        <div class="log-head">
+          <span>显示最近 200 条日志</span>
+          <button class="btn btn-inline" onclick="refreshLogs()">刷新</button>
+        </div>
+        <div class="log-body">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th class="log-col-time">时间</th>
+                <th class="log-col-level">级别</th>
+                <th>内容</th>
+              </tr>
+            </thead>
+            <tbody id="logRows">
+              <tr><td colspan="3" class="muted">暂无日志</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     let editingEndpointName = null;
     let editingLinkName = null;
@@ -502,6 +575,49 @@ def _html_page() -> str:
         if(payload.message) return String(payload.message);
       }
       return fallback;
+    }
+    function formatLogTime(ts){
+      if(!ts) return '-';
+      const d = new Date(ts);
+      if(Number.isNaN(d.getTime())) return String(ts);
+      return d.toLocaleString('zh-CN', { hour12: false });
+    }
+    function closeLogModal(){
+      document.getElementById('logModalMask').style.display = 'none';
+    }
+    async function openLogModal(){
+      document.getElementById('logModalMask').style.display = 'flex';
+      await refreshLogs();
+    }
+    async function refreshLogs(){
+      const tbody = document.getElementById('logRows');
+      if(!tbody) return;
+      try{
+        const res = await fetch('/api/logs?limit=200');
+        const raw = await res.json().catch(() => ({}));
+        if(!res.ok){
+          tbody.innerHTML = '<tr><td colspan="3" class="bad-text">读取日志失败: ' + escapeHtml(apiErrorText(raw, '未知错误')) + '</td></tr>';
+          return;
+        }
+        const rows = apiData(raw);
+        if(!Array.isArray(rows) || !rows.length){
+          tbody.innerHTML = '<tr><td colspan="3" class="muted">暂无日志</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map((r) => {
+          const level = escapeHtml(String(r.level || '-'));
+          const levelClass = level === 'ERROR' ? 'bad-text' : (level === 'WARNING' ? 'muted' : '');
+          const message = escapeHtml(String(r.message || ''));
+          const exception = r.exception ? ('<br><span class="bad-text">' + escapeHtml(String(r.exception)) + '</span>') : '';
+          return '<tr>' +
+            '<td class="log-col-time muted">' + escapeHtml(formatLogTime(r.ts)) + '</td>' +
+            '<td class="log-col-level ' + levelClass + '">' + level + '</td>' +
+            '<td class="log-col-message">' + message + exception + '</td>' +
+          '</tr>';
+        }).join('');
+      }catch(_e){
+        tbody.innerHTML = '<tr><td colspan="3" class="bad-text">网络错误，日志读取失败</td></tr>';
+      }
     }
     async function openSettingsModal(){
       await loadSettingsForm();
@@ -1022,6 +1138,9 @@ def _html_page() -> str:
         document.getElementById('badCount').textContent = bad;
         document.getElementById('circuitCount').textContent = circuit;
         renderEndpointCards(routerRows);
+        if(document.getElementById('logModalMask').style.display === 'flex'){
+          await refreshLogs();
+        }
       }catch(err){
         const tbody = document.getElementById('linkMonitorRows');
         if(tbody){
@@ -1181,6 +1300,14 @@ def build_handler(store: StatusStore, config_store: RuntimeConfigStore, reload_c
                 return
             if parsed.path == "/api/config/settings":
                 self._write_ok(config_store.get_settings())
+                return
+            if parsed.path == "/api/logs":
+                qs = parse_qs(parsed.query or "")
+                try:
+                    limit = int((qs.get("limit") or ["200"])[0])
+                except (TypeError, ValueError):
+                    limit = 200
+                self._write_ok(get_recent_logs(limit=limit))
                 return
             if parsed.path == "/api/config/yaml":
                 self._write_ok({"text": config_store.read_yaml_text()})
