@@ -69,6 +69,34 @@ def _validate_link_payload(payload: dict) -> None:
         raise ValueError("WG 网段格式不正确，例如 10.10.0.0/24") from exc
 
 
+def _validate_settings_payload(payload: dict) -> None:
+    def _int_range(key: str, label: str, min_v: int, max_v: int) -> None:
+        if key not in payload:
+            return
+        try:
+            value = int(payload.get(key))
+        except (TypeError, ValueError):
+            raise ValueError(f"{label}必须是整数")
+        if value < min_v or value > max_v:
+            raise ValueError(f"{label}必须在 {min_v} 到 {max_v} 之间")
+
+    _int_range("poll_interval_seconds", "轮询间隔", 5, 3600)
+    _int_range("max_workers", "最大并发", 1, 256)
+    _int_range("connect_timeout_seconds", "连接超时", 1, 120)
+    _int_range("command_timeout_seconds", "命令超时", 1, 300)
+    _int_range("recheck_delay_seconds", "复检延迟", 1, 300)
+    if "heartbeat_file" in payload and not str(payload.get("heartbeat_file", "")).strip():
+        raise ValueError("心跳文件路径不能为空")
+    if "log_level" in payload:
+        level = str(payload.get("log_level", "")).strip().upper()
+        if level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+            raise ValueError("日志级别仅支持 DEBUG/INFO/WARNING/ERROR")
+    if "web_password" in payload:
+        pwd = str(payload.get("web_password", "")).strip()
+        if len(pwd) < 8:
+            raise ValueError("访问密码至少 8 位")
+
+
 def _html_page() -> str:
     return """<!doctype html>
 <html>
@@ -99,6 +127,15 @@ def _html_page() -> str:
     .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
     .title { font-size: 24px; font-weight: 700; margin: 0; }
+    .title-row { display: flex; align-items: center; gap: 8px; }
+    .version-tag {
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: var(--chip);
+    }
     .subtitle { color: var(--muted); font-size: 14px; margin-top: 6px; }
     .refresh-tag {
       background: var(--chip);
@@ -263,6 +300,10 @@ def _html_page() -> str:
       text-align: left;
       vertical-align: top;
     }
+    .ta-center { text-align: center; }
+    .ta-right { text-align: right; }
+    .footer-links a { color: #b7c5ea; text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; }
     th {
       background: var(--panel-soft);
       color: #b7c5ea;
@@ -299,11 +340,14 @@ def _html_page() -> str:
   <div class="container">
     <div class="topbar">
       <div>
-        <h1 class="title">Mikrotik 网络状态面板</h1>
+        <div class="title-row">
+          <h1 class="title">Mikrotik 网络状态面板</h1>
+          <span class="version-tag">v1.0.1</span>
+        </div>
         <div class="subtitle">实时显示设备到主设备连接情况、丢包和自动修复结果</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;">
-        <div class="refresh-tag">每 5 秒自动刷新</div>
+        <button class="btn btn-inline" title="系统设置" onclick="openSettingsModal()">⚙</button>
         <button class="btn btn-inline" onclick="logout()">退出登录</button>
       </div>
     </div>
@@ -343,16 +387,23 @@ def _html_page() -> str:
           <tr>
             <th>设备名称</th>
             <th>服务器名称</th>
-            <th>连接状态</th>
-            <th>丢包率</th>
-            <th>上传速度</th>
-            <th>下载速度</th>
-            <th>最近检查</th>
-            <th>操作</th>
+            <th class="ta-center">连接状态</th>
+            <th class="ta-center">丢包率</th>
+            <th class="ta-right">上传速度</th>
+            <th class="ta-right">下载速度</th>
+            <th class="ta-center">最近检查</th>
+            <th class="ta-center">操作</th>
           </tr>
         </thead>
         <tbody id="linkMonitorRows"></tbody>
       </table>
+    </div>
+    <div class="muted footer-links" style="text-align:center;margin-top:14px;font-size:12px;">
+      Copyright © 2026 sevenmade. All rights reserved.
+      &nbsp;|&nbsp;
+      <a href="/LICENSE" target="_blank" rel="noopener noreferrer">授权文件</a>
+      &nbsp;|&nbsp;
+      <a href="https://github.com/sevenmade/mikrotik-monitor" target="_blank" rel="noopener noreferrer">GitHub</a>
     </div>
   </div>
   <div id="endpointModalMask" class="modal-mask">
@@ -397,6 +448,39 @@ def _html_page() -> str:
       </div>
     </div>
   </div>
+  <div id="settingsModalMask" class="modal-mask">
+    <div class="modal" style="width:min(860px,96vw);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <strong>系统设置</strong>
+        <button class="btn btn-inline" onclick="closeSettingsModal()">关闭</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button id="settingsTabBtn" class="btn btn-inline" onclick="switchSettingsTab('form')">参数设置</button>
+        <button id="yamlTabBtn" class="btn btn-inline" onclick="switchSettingsTab('yaml')">YAML 编辑</button>
+      </div>
+      <div id="settingsFormTab" class="form-grid">
+        <div class="field"><label>poll_interval_seconds</label><input id="s_poll_interval_seconds" type="number" min="5" /></div>
+        <div class="field"><label>max_workers</label><input id="s_max_workers" type="number" min="1" /></div>
+        <div class="field"><label>connect_timeout_seconds</label><input id="s_connect_timeout_seconds" type="number" min="1" /></div>
+        <div class="field"><label>command_timeout_seconds</label><input id="s_command_timeout_seconds" type="number" min="1" /></div>
+        <div class="field"><label>recheck_delay_seconds</label><input id="s_recheck_delay_seconds" type="number" min="1" /></div>
+        <div class="field"><label>log_level</label><select id="s_log_level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></div>
+        <div class="field"><label>heartbeat_file</label><input id="s_heartbeat_file" /></div>
+        <div class="field"><label>web_password</label><input id="s_web_password" type="password" /></div>
+      </div>
+      <div id="settingsYamlTab" style="display:none;margin-top:10px;">
+        <div class="field">
+          <label>routers.yaml 手动编辑</label>
+          <textarea id="s_yaml_text" style="width:100%;min-height:320px;border:1px solid var(--line);background:#0f1830;color:var(--text);border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;"></textarea>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeSettingsModal()">取消</button>
+        <button id="settingsSaveBtn" class="btn" onclick="saveSettingsForm()">保存参数</button>
+        <button id="yamlSaveBtn" class="btn" style="display:none;" onclick="saveYamlText()">保存 YAML</button>
+      </div>
+    </div>
+  </div>
   <script>
     let editingEndpointName = null;
     let editingLinkName = null;
@@ -418,6 +502,93 @@ def _html_page() -> str:
         if(payload.message) return String(payload.message);
       }
       return fallback;
+    }
+    async function openSettingsModal(){
+      await loadSettingsForm();
+      switchSettingsTab('form');
+      document.getElementById('settingsModalMask').style.display = 'flex';
+    }
+    function closeSettingsModal(){
+      document.getElementById('settingsModalMask').style.display = 'none';
+    }
+    function switchSettingsTab(tab){
+      const formTab = document.getElementById('settingsFormTab');
+      const yamlTab = document.getElementById('settingsYamlTab');
+      const formBtn = document.getElementById('settingsTabBtn');
+      const yamlBtn = document.getElementById('yamlTabBtn');
+      const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+      const yamlSaveBtn = document.getElementById('yamlSaveBtn');
+      const isYaml = tab === 'yaml';
+      formTab.style.display = isYaml ? 'none' : 'grid';
+      yamlTab.style.display = isYaml ? 'block' : 'none';
+      settingsSaveBtn.style.display = isYaml ? 'none' : 'inline-block';
+      yamlSaveBtn.style.display = isYaml ? 'inline-block' : 'none';
+      formBtn.style.opacity = isYaml ? '0.7' : '1';
+      yamlBtn.style.opacity = isYaml ? '1' : '0.7';
+      if(isYaml){
+        loadYamlText();
+      }
+    }
+    async function loadSettingsForm(){
+      const res = await fetch('/api/config/settings');
+      const raw = await res.json().catch(() => ({}));
+      if(!res.ok){
+        alert('读取设置失败: ' + apiErrorText(raw, '未知错误'));
+        return;
+      }
+      const s = apiData(raw) || {};
+      document.getElementById('s_poll_interval_seconds').value = s.poll_interval_seconds ?? 30;
+      document.getElementById('s_max_workers').value = s.max_workers ?? 20;
+      document.getElementById('s_connect_timeout_seconds').value = s.connect_timeout_seconds ?? 8;
+      document.getElementById('s_command_timeout_seconds').value = s.command_timeout_seconds ?? 10;
+      document.getElementById('s_recheck_delay_seconds').value = s.recheck_delay_seconds ?? 10;
+      document.getElementById('s_log_level').value = s.log_level || 'INFO';
+      document.getElementById('s_heartbeat_file').value = s.heartbeat_file || '/tmp/mikrotik_monitor.heartbeat';
+      document.getElementById('s_web_password').value = s.web_password || '';
+    }
+    async function saveSettingsForm(){
+      const payload = {
+        poll_interval_seconds: Number(document.getElementById('s_poll_interval_seconds').value),
+        max_workers: Number(document.getElementById('s_max_workers').value),
+        connect_timeout_seconds: Number(document.getElementById('s_connect_timeout_seconds').value),
+        command_timeout_seconds: Number(document.getElementById('s_command_timeout_seconds').value),
+        recheck_delay_seconds: Number(document.getElementById('s_recheck_delay_seconds').value),
+        log_level: document.getElementById('s_log_level').value,
+        heartbeat_file: document.getElementById('s_heartbeat_file').value.trim(),
+        web_password: document.getElementById('s_web_password').value,
+      };
+      const res = await fetch('/api/config/settings', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+      const raw = await res.json().catch(() => ({}));
+      if(!res.ok){
+        alert('保存设置失败: ' + apiErrorText(raw, '未知错误'));
+        return;
+      }
+      alert('设置已保存并生效');
+      closeSettingsModal();
+    }
+    async function loadYamlText(){
+      const res = await fetch('/api/config/yaml');
+      const raw = await res.json().catch(() => ({}));
+      if(!res.ok){
+        alert('读取 YAML 失败: ' + apiErrorText(raw, '未知错误'));
+        return;
+      }
+      const data = apiData(raw) || {};
+      document.getElementById('s_yaml_text').value = String(data.text || '');
+    }
+    async function saveYamlText(){
+      const text = document.getElementById('s_yaml_text').value;
+      const res = await fetch('/api/config/yaml', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ text }) });
+      const raw = await res.json().catch(() => ({}));
+      if(!res.ok){
+        alert('保存 YAML 失败: ' + apiErrorText(raw, '未知错误'));
+        return;
+      }
+      alert('YAML 已保存并生效');
+      closeSettingsModal();
+      await refreshEndpoints();
+      await refreshLinks();
+      await refresh();
     }
     function populateWgSelect(sel, names, preferredValue){
       const pref = preferredValue !== undefined && preferredValue !== null && preferredValue !== ''
@@ -653,12 +824,12 @@ def _html_page() -> str:
         return `<tr>
           <td><strong>${escapeHtml(devName)}</strong></td>
           <td>${escapeHtml(srvName)}</td>
-          <td>${statusTag(ok)}</td>
-          <td>${pl}</td>
-          <td>${escapeHtml(tx)}</td>
-          <td>${escapeHtml(rx)}</td>
-          <td class="muted">${last}</td>
-          <td>
+          <td class="ta-center">${statusTag(ok)}</td>
+          <td class="ta-center">${pl}</td>
+          <td class="ta-right">${escapeHtml(tx)}</td>
+          <td class="ta-right">${escapeHtml(rx)}</td>
+          <td class="muted ta-center">${last}</td>
+          <td class="ta-center">
             <button type="button" class="btn btn-inline" onclick="openLinkModalByName(${JSON.stringify(nm)})">编辑</button>
             <button type="button" class="btn btn-inline btn-danger" onclick="deleteLink(${JSON.stringify(nm)})">删除</button>
           </td>
@@ -1008,6 +1179,12 @@ def build_handler(store: StatusStore, config_store: RuntimeConfigStore, reload_c
             if parsed.path == "/api/config/links":
                 self._write_ok(config_store.list_links())
                 return
+            if parsed.path == "/api/config/settings":
+                self._write_ok(config_store.get_settings())
+                return
+            if parsed.path == "/api/config/yaml":
+                self._write_ok({"text": config_store.read_yaml_text()})
+                return
             if parsed.path == "/api/discover/wireguard-interfaces":
                 qs = parse_qs(parsed.query or "")
                 endpoint = (qs.get("endpoint") or [""])[0].strip()
@@ -1103,6 +1280,28 @@ def build_handler(store: StatusStore, config_store: RuntimeConfigStore, reload_c
                     payload["name"] = name
                     _validate_link_payload(payload)
                     config_store.upsert_link(payload)
+                    reload_config_callback()
+                    self._write_ok(None)
+                except Exception as exc:
+                    self._write_error(400, str(exc), "validation_error")
+                return
+            if parsed.path == "/api/config/settings":
+                try:
+                    payload = self._read_json()
+                    _validate_settings_payload(payload)
+                    config_store.update_settings(payload)
+                    reload_config_callback()
+                    self._write_ok(None)
+                except Exception as exc:
+                    self._write_error(400, str(exc), "validation_error")
+                return
+            if parsed.path == "/api/config/yaml":
+                try:
+                    payload = self._read_json()
+                    text = str(payload.get("text", ""))
+                    if not text.strip():
+                        raise ValueError("YAML 内容不能为空")
+                    config_store.write_yaml_text(text)
                     reload_config_callback()
                     self._write_ok(None)
                 except Exception as exc:

@@ -42,6 +42,57 @@ class RuntimeConfigStore:
             self.config_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
             return generated, True
 
+    def get_settings(self) -> dict[str, Any]:
+        raw = self.read_raw()
+        settings = raw.get("settings", {})
+        if not isinstance(settings, dict):
+            settings = {}
+        return {
+            "poll_interval_seconds": _to_int(settings.get("poll_interval_seconds", 60), 60),
+            "max_workers": _to_int(settings.get("max_workers", 20), 20),
+            "connect_timeout_seconds": _to_int(settings.get("connect_timeout_seconds", 8), 8),
+            "command_timeout_seconds": _to_int(settings.get("command_timeout_seconds", 10), 10),
+            "recheck_delay_seconds": _to_int(settings.get("recheck_delay_seconds", 10), 10),
+            "heartbeat_file": str(settings.get("heartbeat_file", "/tmp/mikrotik_monitor.heartbeat")),
+            "log_level": str(settings.get("log_level", "INFO")),
+            "web_password": str(settings.get("web_password", "")),
+        }
+
+    def update_settings(self, payload: dict[str, Any]) -> None:
+        with self._lock:
+            raw = yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}
+            settings = raw.get("settings", {})
+            if not isinstance(settings, dict):
+                settings = {}
+                raw["settings"] = settings
+            for key in (
+                "poll_interval_seconds",
+                "max_workers",
+                "connect_timeout_seconds",
+                "command_timeout_seconds",
+                "recheck_delay_seconds",
+            ):
+                if key in payload:
+                    settings[key] = _to_int(payload.get(key), _to_int(settings.get(key), 0))
+            if "heartbeat_file" in payload:
+                settings["heartbeat_file"] = str(payload.get("heartbeat_file", "")).strip()
+            if "log_level" in payload:
+                settings["log_level"] = str(payload.get("log_level", "INFO")).strip().upper()
+            if "web_password" in payload:
+                settings["web_password"] = str(payload.get("web_password", "")).strip()
+            self.config_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    def read_yaml_text(self) -> str:
+        with self._lock:
+            return self.config_path.read_text(encoding="utf-8")
+
+    def write_yaml_text(self, text: str) -> None:
+        parsed = yaml.safe_load(text) or {}
+        if not isinstance(parsed, dict):
+            raise ValueError("YAML 顶层必须是对象")
+        with self._lock:
+            self.config_path.write_text(text, encoding="utf-8")
+
     def list_endpoints(self) -> list[dict[str, Any]]:
         raw = self.read_raw()
         endpoints = raw.get("endpoints", {})
