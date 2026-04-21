@@ -90,6 +90,12 @@ class RouterWorker:
         state = self._states.setdefault(link.name, RepairState())
         check_ts = time.time()
         client_login, server_login = self._build_login_info(link)
+        link_ctx = (
+            f"link={link.name} "
+            f"client={client_login.host}:{client_login.port}({link.wireguard.client_wireguard_name}) "
+            f"server={server_login.host}:{server_login.port}({link.wireguard.server_wireguard_name}) "
+            f"subnet={link.wireguard.wg_subnet}"
+        )
 
         try:
             with RouterOsClient(
@@ -100,7 +106,7 @@ class RouterWorker:
                 health = check_wireguard_reachability(client, link)
                 tx_bps, rx_bps = sample_wireguard_rate_bps(client, link)
         except Exception as exc:
-            self.logger.exception("health check failed for %s: %s", link.name, exc)
+            self.logger.exception("health check failed: %s error=%s", link_ctx, exc)
             state.consecutive_failures += 1
             self._update_status_base(link, state, check_ts)
             self.status_store.upsert(link.name, lambda s: self._apply_failed_check(s, str(exc)))
@@ -110,7 +116,13 @@ class RouterWorker:
         self._update_status_base(link, state, check_ts)
         self.status_store.upsert(link.name, lambda s: s.set_rates(tx_bps=tx_bps, rx_bps=rx_bps))
         if health.reachable:
-            self.logger.info("wireguard ok: %s packet-loss=%s", link.name, health.packet_loss)
+            self.logger.info(
+                "wireguard ok: %s packet_loss=%s%% tx=%sbps rx=%sbps",
+                link_ctx,
+                health.packet_loss,
+                int(tx_bps),
+                int(rx_bps),
+            )
             state.consecutive_failures = 0
             self.status_store.upsert(
                 link.name,
@@ -126,8 +138,20 @@ class RouterWorker:
             )
             return
 
-        self.logger.warning("wireguard failed: %s reason=%s", link.name, health.reason)
+        self.logger.warning(
+            "wireguard failed: %s packet_loss=%s%% reason=%s",
+            link_ctx,
+            health.packet_loss,
+            health.reason,
+        )
         repair_success = self.healer.attempt_repair(link=link, state=state, client_login=client_login, server_login=server_login)
+        self.logger.info(
+            "repair result: %s attempted=true success=%s consecutive_failures=%s circuit_open=%s",
+            link_ctx,
+            repair_success,
+            state.consecutive_failures,
+            time.time() < state.circuit_open_until,
+        )
         if not repair_success:
             self._notify("error", f"{link.name} 自动修复失败", health.reason)
         self.status_store.upsert(

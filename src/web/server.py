@@ -361,9 +361,20 @@ def _html_page() -> str:
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .log-col-time { width: 180px; }
+    .log-table th { text-align: center; }
+    .log-col-time { width: 140px; }
     .log-col-level { width: 72px; text-align: center; }
     .log-col-message { white-space: normal; word-break: break-word; }
+    .log-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .log-exception {
+      margin-top: 6px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: rgba(255, 91, 91, 0.12);
+      border: 1px solid rgba(255, 91, 91, 0.24);
+      white-space: pre-wrap;
+      font-size: 11px;
+    }
     @media (max-width: 900px){
       .cards { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
       .endpoint-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -535,7 +546,16 @@ def _html_page() -> str:
       <div class="log-panel">
         <div class="log-head">
           <span>显示最近 200 条日志</span>
-          <button class="btn btn-inline" onclick="refreshLogs()">刷新</button>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <select id="logLevelFilter" class="btn btn-inline" onchange="refreshLogs()">
+              <option value="ALL">全部级别</option>
+              <option value="DEBUG">DEBUG</option>
+              <option value="INFO">INFO</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+            <button class="btn btn-inline" onclick="refreshLogs()">刷新</button>
+          </div>
         </div>
         <div class="log-body">
           <table class="log-table">
@@ -592,8 +612,10 @@ def _html_page() -> str:
     async function refreshLogs(){
       const tbody = document.getElementById('logRows');
       if(!tbody) return;
+      const levelSel = document.getElementById('logLevelFilter');
+      const level = levelSel ? levelSel.value : 'ALL';
       try{
-        const res = await fetch('/api/logs?limit=200');
+        const res = await fetch('/api/logs?limit=200&level=' + encodeURIComponent(level));
         const raw = await res.json().catch(() => ({}));
         if(!res.ok){
           tbody.innerHTML = '<tr><td colspan="3" class="bad-text">读取日志失败: ' + escapeHtml(apiErrorText(raw, '未知错误')) + '</td></tr>';
@@ -608,11 +630,18 @@ def _html_page() -> str:
           const level = escapeHtml(String(r.level || '-'));
           const levelClass = level === 'ERROR' ? 'bad-text' : (level === 'WARNING' ? 'muted' : '');
           const message = escapeHtml(String(r.message || ''));
-          const exception = r.exception ? ('<br><span class="bad-text">' + escapeHtml(String(r.exception)) + '</span>') : '';
+          const source = escapeHtml(String(r.source || '-'));
+          const thread = escapeHtml(String(r.thread || '-'));
+          const exception = r.exception
+            ? ('<div class="log-exception">' + escapeHtml(String(r.exception)) + '</div>')
+            : '';
           return '<tr>' +
             '<td class="log-col-time muted">' + escapeHtml(formatLogTime(r.ts)) + '</td>' +
             '<td class="log-col-level ' + levelClass + '">' + level + '</td>' +
-            '<td class="log-col-message">' + message + exception + '</td>' +
+            '<td class="log-col-message">' + message +
+              '<div class="log-meta">来源: ' + source + ' | 线程: ' + thread + '</div>' +
+              exception +
+            '</td>' +
           '</tr>';
         }).join('');
       }catch(_e){
@@ -1138,9 +1167,7 @@ def _html_page() -> str:
         document.getElementById('badCount').textContent = bad;
         document.getElementById('circuitCount').textContent = circuit;
         renderEndpointCards(routerRows);
-        if(document.getElementById('logModalMask').style.display === 'flex'){
-          await refreshLogs();
-        }
+        // Avoid extra /api/logs requests on every global refresh tick.
       }catch(err){
         const tbody = document.getElementById('linkMonitorRows');
         if(tbody){
@@ -1307,7 +1334,8 @@ def build_handler(store: StatusStore, config_store: RuntimeConfigStore, reload_c
                     limit = int((qs.get("limit") or ["200"])[0])
                 except (TypeError, ValueError):
                     limit = 200
-                self._write_ok(get_recent_logs(limit=limit))
+                level = str((qs.get("level") or ["ALL"])[0]).upper()
+                self._write_ok(get_recent_logs(limit=limit, level=level))
                 return
             if parsed.path == "/api/config/yaml":
                 self._write_ok({"text": config_store.read_yaml_text()})
